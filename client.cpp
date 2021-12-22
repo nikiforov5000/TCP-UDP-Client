@@ -1,6 +1,8 @@
-#include <chrono>
+﻿#include <chrono>
 #include <iostream>
 #include <fstream>
+#include <future>
+#include <map>
 #include <string>
 #include <sstream>
 #include <thread>
@@ -8,14 +10,51 @@
 #include <WS2tcpip.h>
 #pragma comment(lib, "ws2_32.lib")
 
+std::map<int, int> Confirmations;
 
-class UDPclient {
-	SOCKET out{};
-	sockaddr_in server{};
-	int UDPport;
-	std::string ipAdress;
+class UDPClient {
+	int m_UDPPort;
+	std::string m_ipAddress;
+	std::ifstream m_ifs;
+	sockaddr_in m_server;
+	SOCKET m_out;
+	std::string m_fileName;
+	int m_timeout;
 public:
-	UDPclient(int udp, std::string ip) : UDPport(udp), ipAdress(ip) {
+	UDPClient(std::string& ip, int port, std::string& filename, int timeout) 
+	  : m_UDPPort(port), 
+		m_ipAddress(ip),
+		m_fileName(filename), 
+		m_timeout(timeout)
+	{};
+	void openFile() {
+		m_ifs.open(m_fileName);
+		while (!m_ifs.is_open()) {
+			std::cout << m_fileName << " not found. Enter new name:" << std::endl;
+			std::cin >> m_fileName;
+		}
+	}
+	void sendPack(int id, std::string pack) {
+		while (true) {
+			size_t packSize{ (std::to_string(id) + " " + pack).length() };
+			std::string sendBuf{ std::to_string(id) + " " + pack };
+			int sendOk = sendto(m_out, sendBuf.c_str(), sendBuf.length() + 1, 0, (sockaddr*)&m_server, sizeof(m_server));
+			std::this_thread::sleep_for(std::chrono::milliseconds(m_timeout));
+			if ((*Confirmations.find(id)).second == sendOk) { break; }
+		}
+	}
+	void sendFile() {
+		std::stringstream buffer;
+		buffer << m_ifs.rdbuf();
+		size_t totalPacks{ (size_t)std::ceil(buffer.str().size() / 1024) };
+		std::this_thread::sleep_for(std::chrono::milliseconds(100)); //// Wait
+		for (size_t i = 0; i < totalPacks;) {
+			std::string pack{ buffer.str().substr(i * 1024, 1024) };
+			//auto result = std::async(std::launch::async, &UDPClient::sendPack, this, i, pack);
+			sendPack(i, pack);
+		}
+	}
+	void connectUdp() {
 		WSADATA data;
 		WORD version = MAKEWORD(2, 2);
 		int wsOk = WSAStartup(version, &data);
@@ -23,132 +62,81 @@ public:
 			std::cout << "Can't start Winsock! " << wsOk;
 			return;
 		}
-
-		server.sin_family = AF_INET;
-		server.sin_port = htons(UDPport);
-		inet_pton(AF_INET, ipAdress.c_str(), &server.sin_addr);
-
-		// Socket creation, note that the socket type is datagram
-		out = socket(AF_INET, SOCK_DGRAM, 0);
-		if (out == SOCKET_ERROR) {
+		m_server.sin_family = AF_INET;
+		m_server.sin_port = htons(m_UDPPort);
+		inet_pton(AF_INET, m_ipAddress.c_str(), &m_server.sin_addr);
+		m_out = socket(AF_INET, SOCK_DGRAM, 0);
+		if (m_out == SOCKET_ERROR) {
 
 		}
-	}
-
-	// Write out to that socket
-	int sendPack(size_t id, std::string& pack) {
-		std::string sendBuf{ std::to_string(id) + " " + pack };
-		int sendOk = sendto(out, sendBuf.c_str(), sendBuf.length() + 1, 0, (sockaddr*)&server, sizeof(server));
-		std::cout << "sendto " << std::endl;
-
-		if (sendOk == SOCKET_ERROR) {
-			std::cout << "That didn't work! " << WSAGetLastError() << std::endl;
-		}
-		return sendOk - 1;
-	}
-
-	void closeConn() {
-		closesocket(out);
-		WSACleanup();
-	}
-	~UDPclient() {
-
+		openFile();
+		sendFile();
 	}
 };
 
-///////////// C L I E N T
-/////////////
+class TCPClient {
+	SOCKET sock;
+	std::string ipAddress;
+	int TCPPort;
+public:
+	TCPClient(std::string& ip, int port) : ipAddress(ip), TCPPort(port){
+		// Init winsock
+		WSAData data;
+		WORD ver = MAKEWORD(2, 2);
+		int wsResult = WSAStartup(ver, &data);
+		if (wsResult != 0) {
+			std::cerr << "Can't start winsock, ERROR# " << wsResult << std::endl;
+		}
+		// Create Winsock
+		sock = socket(AF_INET, SOCK_STREAM, 0);
+		if (sock == INVALID_SOCKET) {
+			std::cerr << "Can't create socket, ERROR# " << WSAGetLastError() << std::endl;
+			WSACleanup();
+		}
+		// Fill hint
+		sockaddr_in hint;
+		hint.sin_family = AF_INET;
+		hint.sin_port = htons(TCPPort);
+		inet_pton(AF_INET, ipAddress.c_str(), &hint.sin_addr);
+		// Connect to server
+		int connResult = connect(sock, (sockaddr*)&hint, sizeof(hint));
+		if (connResult == SOCKET_ERROR) {
+			std::cerr << "Can't connect to server. ERROR# " << WSAGetLastError() << std::endl;
+			closesocket(sock);
+			WSACleanup();
+			//return 0;
+		}
+	}
+	void sendInfo(std::string info) {
+		int sendResult = send(sock, info.c_str(), info.length() + 1, 0);
+	}
+	void receiveInfo() {
+		char buf[1024];
+		int bytesRceived = recv(sock, buf, 16, 0);
+		if (bytesRceived > 0) {
+			std::string stringBuf{ std::string(buf) };
+			int idConf{ std::stoi((stringBuf.substr(0, stringBuf.find(' ')))) };
+			int packSizeConf { std::stoi(stringBuf.substr(stringBuf.find(' ') + 1, stringBuf.length())) };
+			Confirmations.emplace(idConf, packSizeConf);
+		}
+	}
+};
 
 int main(int argc, char* argv[]) {
-	
-	std::string ipAddress{ argv[1] };
-	int TCPport{ atoi(argv[2]) };
-	int UDPport{ atoi(argv[3]) };
-	std::string fileName{ argv[4] };
-	int timeout{ atoi(argv[5]) };
 
-///////////// Connect to server via TCP
+	std::string ip			{ argv[1] };
+	int tcpPort				{ atoi(argv[2])};
+	int udpPort				{ atoi(argv[3])};
+	std::string fileName	{ argv[4]};
+	int timeout				{ atoi(argv[5])};
 
-	// Init winsock
-	WSAData data;
-	WORD ver = MAKEWORD(2, 2);
-	int wsResult = WSAStartup(ver, &data);
-	if (wsResult != 0) {
-		std::cerr << "Can't start winsock, ERROR# " << wsResult << std::endl;
-		return 0;
-	}
-
-	// Create Winsock
-	SOCKET sock = socket(AF_INET, SOCK_STREAM, 0);
-	if (sock == INVALID_SOCKET) {
-		std::cerr << "Can't create socket, ERROR# " << WSAGetLastError() << std::endl;
-		WSACleanup();
-	}
-	
-	// Fill hint
-	sockaddr_in hint;
-	hint.sin_family = AF_INET;
-	hint.sin_port = htons(TCPport);
-	inet_pton(AF_INET, ipAddress.c_str(), &hint.sin_addr);
-
-	// Connect to server
-	int connResult = connect(sock, (sockaddr*)&hint, sizeof(hint));
-	if (connResult == SOCKET_ERROR) {
-		std::cerr << "Can't connect to server. ERROR# " << WSAGetLastError() << std::endl;
-		closesocket(sock);
-		WSACleanup();
-		return 0;
-	}
-
-	///////////// Open file
-	std::ifstream ifs(fileName);
-	while (!ifs.is_open()) {
-		std::cout << fileName << " not found." << std::endl; /// ENTER NEW NAME
-		std::cin >> fileName;
-	}
-
-	///////////// Send file name and UDP port via TCP
-	char buf[1024];
-	std::string fileNameAndUDPport{ fileName + " " + std::to_string(UDPport) };
-	int sendResult = send(sock, fileNameAndUDPport.c_str(), fileNameAndUDPport.size() + 1, 0);
-	// if (sendResult != SOCKET_ERROR) Check ERROR
-
-	///////////// Prepare UDP
-
-	std::stringstream buffer;
-	buffer << ifs.rdbuf();
-	size_t totalPacks{ (size_t)std::ceil(buffer.str().size() / 1024) };
-
-	for (size_t i = 0; i < totalPacks;) {
-		std::this_thread::sleep_for(std::chrono::milliseconds(100));
-		UDPclient* udpConn = new UDPclient(UDPport, ipAddress);
-		std::string pack{ buffer.str().substr(i * 1024, 1024) };
-
-		///////////// Send UDP pack with id
-		int conf = udpConn->sendPack(i, pack);
-		///////////// Wait for TCP confirmation:
-
-		ZeroMemory(buf, 16);
-
-		std::cout << "about to recv " << std::endl;
-		int bytesRceived = recv(sock, buf, 16, 0);
-		std::cout << "bytesRceived " << bytesRceived << std::endl;
-		///////////// if confirmation: next
-		if (bytesRceived > 0 && conf == atoi(buf)) {
-			++i;
-		}
-		///////////// if no confirmation within timeout: send UDP pack again
-		else { continue; }
-	}
-///////////// Send notification to close session
-	sendResult = send(sock, "EXIT", 5, 0);
-	// if (sendResult != SOCKET_ERROR) Check ERROR
-
-///////////// Close socket, exit program
-
-	// Close
-	closesocket(sock);
-	WSACleanup();
-	return 0;
+	TCPClient tcpClient(ip, tcpPort);
+	tcpClient.sendInfo(std::to_string(udpPort) + " " + fileName);
+	UDPClient udpClient(ip, udpPort, fileName, timeout);
+	//std::future<void> result{ std::async(std::launch::async, &UDPClient::connectUdp, &udpClient) };
+	udpClient.connectUdp();
+	//result.get();
+	tcpClient.sendInfo("disconnect");
+	tcpClient.~tcpClient();
 }
 
