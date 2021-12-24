@@ -12,14 +12,22 @@
 
 std::map<int, int> Confirmations;
 
+void Print(std::map<int,int>& map) {
+	if (map.empty()) { 
+		std::cout << "tcpClient Confirmations empty" << std::endl;
+		return;
+	}
+	std::cout << "id:" << (*map.rbegin()).first << " " << "size" << (*map.rbegin()).second << std::endl;
+}
+
 class UDPClient {
-	int m_UDPPort;
-	std::string m_ipAddress;
-	std::ifstream m_ifs;
-	sockaddr_in m_server;
-	SOCKET m_out;
-	std::string m_fileName;
-	int m_timeout;
+	int				m_UDPPort{};
+	std::string		m_ipAddress{};
+	std::ifstream	m_ifs{};
+	sockaddr_in		m_server{};
+	SOCKET			m_out{};
+	std::string		m_fileName{};
+	int				m_timeout{};
 public:
 	UDPClient(std::string& ip, int port, std::string& filename, int timeout) 
 	  : m_UDPPort(port), 
@@ -38,21 +46,31 @@ public:
 		while (true) {
 			size_t packSize{ (std::to_string(id) + " " + pack).length() };
 			std::string sendBuf{ std::to_string(id) + " " + pack };
+			std::cout << "about to sendFile.." << std::endl;
+
 			int sendOk = sendto(m_out, sendBuf.c_str(), sendBuf.length() + 1, 0, (sockaddr*)&m_server, sizeof(m_server));
 			std::this_thread::sleep_for(std::chrono::milliseconds(m_timeout));
-			if ((*Confirmations.find(id)).second == sendOk) { break; }
+			Print(Confirmations);
+			if (
+				!Confirmations.empty() &&
+				Confirmations.find(id) != Confirmations.end() &&
+				(*Confirmations.find(id)).second == packSize
+				) { 
+				break;
+			}
 		}
 	}
 	void sendFile() {
 		std::stringstream buffer;
 		buffer << m_ifs.rdbuf();
-		size_t totalPacks{ (size_t)std::ceil(buffer.str().size() / 1024) };
 		std::this_thread::sleep_for(std::chrono::milliseconds(100)); //// Wait
-		for (size_t i = 0; i < totalPacks;) {
+		for (size_t i = 0; i * 1024 < buffer.str().length();) {
 			std::string pack{ buffer.str().substr(i * 1024, 1024) };
-			//auto result = std::async(std::launch::async, &UDPClient::sendPack, this, i, pack);
-			sendPack(i, pack);
+			//auto result = std::async(std::launch::async, &UDPClient::sendPack, this, i++, pack);
+			sendPack(i++, pack);
 		}
+		std::cout << "END OF FILE" << std::endl;
+		sendto(m_out, "-1", 3, 0, (sockaddr*)&m_server, sizeof(m_server));
 	}
 	void connectUdp() {
 		WSADATA data;
@@ -75,7 +93,7 @@ public:
 };
 
 class TCPClient {
-	SOCKET sock;
+	SOCKET m_sock;
 	std::string ipAddress;
 	int TCPPort;
 public:
@@ -88,8 +106,8 @@ public:
 			std::cerr << "Can't start winsock, ERROR# " << wsResult << std::endl;
 		}
 		// Create Winsock
-		sock = socket(AF_INET, SOCK_STREAM, 0);
-		if (sock == INVALID_SOCKET) {
+		m_sock = socket(AF_INET, SOCK_STREAM, 0);
+		if (m_sock == INVALID_SOCKET) {
 			std::cerr << "Can't create socket, ERROR# " << WSAGetLastError() << std::endl;
 			WSACleanup();
 		}
@@ -99,26 +117,40 @@ public:
 		hint.sin_port = htons(TCPPort);
 		inet_pton(AF_INET, ipAddress.c_str(), &hint.sin_addr);
 		// Connect to server
-		int connResult = connect(sock, (sockaddr*)&hint, sizeof(hint));
+		int connResult = connect(m_sock, (sockaddr*)&hint, sizeof(hint));
 		if (connResult == SOCKET_ERROR) {
 			std::cerr << "Can't connect to server. ERROR# " << WSAGetLastError() << std::endl;
-			closesocket(sock);
+			closesocket(m_sock);
 			WSACleanup();
 			//return 0;
 		}
 	}
 	void sendInfo(std::string info) {
-		int sendResult = send(sock, info.c_str(), info.length() + 1, 0);
+		int sendResult = send(m_sock, info.c_str(), info.length() + 1, 0);
 	}
-	void receiveInfo() {
+	std::string receiveInfo() {
 		char buf[1024];
-		int bytesRceived = recv(sock, buf, 16, 0);
+		int bytesRceived = recv(m_sock, buf, 16, 0);
 		if (bytesRceived > 0) {
-			std::string stringBuf{ std::string(buf) };
+			return std::string(buf);
+		}
+		return "";
+	}
+	~TCPClient() {
+		closesocket(m_sock);
+		// Shutdown winsock
+		WSACleanup();
+	}	
+	void receiveConfs() {
+		while (m_sock != INVALID_SOCKET) {
+			std::this_thread::sleep_for(std::chrono::milliseconds(20));
+			std::string stringBuf{ receiveInfo() };
+			if (stringBuf.empty()) { continue; }
 			int idConf{ std::stoi((stringBuf.substr(0, stringBuf.find(' ')))) };
-			int packSizeConf { std::stoi(stringBuf.substr(stringBuf.find(' ') + 1, stringBuf.length())) };
+			int packSizeConf{ std::stoi(stringBuf.substr(stringBuf.find(' ') + 1, stringBuf.length())) };
 			Confirmations.emplace(idConf, packSizeConf);
 		}
+		this->~TCPClient();
 	}
 };
 
@@ -133,10 +165,10 @@ int main(int argc, char* argv[]) {
 	TCPClient tcpClient(ip, tcpPort);
 	tcpClient.sendInfo(std::to_string(udpPort) + " " + fileName);
 	UDPClient udpClient(ip, udpPort, fileName, timeout);
-	//std::future<void> result{ std::async(std::launch::async, &UDPClient::connectUdp, &udpClient) };
-	udpClient.connectUdp();
-	//result.get();
-	tcpClient.sendInfo("disconnect");
+	std::future<void> resultUdpClient{ std::async(std::launch::async, &UDPClient::connectUdp, &udpClient) };
+	tcpClient.receiveConfs();
+	resultUdpClient.get();
+	
 	tcpClient.~tcpClient();
 }
 
