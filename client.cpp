@@ -42,32 +42,67 @@ public:
 			std::cin >> m_fileName;
 		}
 	}
+	//void sendPack(int id, std::string pack) {
+	//	while (true) {
+	//		size_t packSize{ (std::to_string(id) + " " + pack).length() };
+	//		std::string sendBuf{ std::to_string(id) + " " + pack };
+	//		std::cout << "about to sendFile.." << std::endl;
+	//
+	//		int sendOk = sendto(m_out, sendBuf.c_str(), sendBuf.length() + 1, 0, (sockaddr*)&m_server, sizeof(m_server));
+	//
+	//		std::this_thread::sleep_for(std::chrono::milliseconds(m_timeout));
+	//		Print(Confirmations);
+	//		if (
+	//			!Confirmations.empty() &&
+	//			Confirmations.find(id) != Confirmations.end() &&
+	//			(*Confirmations.find(id)).second == packSize
+	//			) {
+	//			break;
+	//		}
+	//	}
+	//}
+	//void sendFile() {
+	//	std::stringstream buffer;
+	//	buffer << m_ifs.rdbuf();
+	//	std::this_thread::sleep_for(std::chrono::milliseconds(100)); //// Wait
+	//	for (size_t i = 0; i * 1024 < buffer.str().length();) {
+	//		std::string pack{ buffer.str().substr(i * 1024, 1024) };
+	//		auto result = std::async(std::launch::async, &UDPClient::sendPack, this, i++, pack);
+	//		//sendPack(i++, pack);
+	//	}
+	//	std::cout << "END OF FILE" << std::endl;
+	//	sendto(m_out, "-1", 3, 0, (sockaddr*)&m_server, sizeof(m_server));
+	//}
 	void sendPack(int id, std::string pack) {
 		while (true) {
 			size_t packSize{ (std::to_string(id) + " " + pack).length() };
 			std::string sendBuf{ std::to_string(id) + " " + pack };
 			std::cout << "about to sendFile.." << std::endl;
-
+			
+			std::this_thread::sleep_for(std::chrono::milliseconds(50)); //// Wait
 			int sendOk = sendto(m_out, sendBuf.c_str(), sendBuf.length() + 1, 0, (sockaddr*)&m_server, sizeof(m_server));
-			std::this_thread::sleep_for(std::chrono::milliseconds(m_timeout));
-			Print(Confirmations);
-			if (
-				!Confirmations.empty() &&
-				Confirmations.find(id) != Confirmations.end() &&
-				(*Confirmations.find(id)).second == packSize
-				) { 
-				break;
+			
+			auto timepoint{ std::chrono::system_clock::now() + std::chrono::milliseconds(m_timeout) };
+			while (timepoint > std::chrono::system_clock::now()) {
+				//Print(Confirmations);
+				if (
+					!Confirmations.empty() &&
+					Confirmations.find(id) != Confirmations.end() &&
+					(*Confirmations.find(id)).second == packSize
+					) {
+					return;
+				}
 			}
 		}
 	}
 	void sendFile() {
 		std::stringstream buffer;
 		buffer << m_ifs.rdbuf();
-		std::this_thread::sleep_for(std::chrono::milliseconds(100)); //// Wait
+		std::this_thread::sleep_for(std::chrono::milliseconds(50)); //// Wait
 		for (size_t i = 0; i * 1024 < buffer.str().length();) {
 			std::string pack{ buffer.str().substr(i * 1024, 1024) };
-			//auto result = std::async(std::launch::async, &UDPClient::sendPack, this, i++, pack);
 			sendPack(i++, pack);
+			//auto result = std::async(std::launch::async, &UDPClient::sendPack, this, i++, pack);
 		}
 		std::cout << "END OF FILE" << std::endl;
 		sendto(m_out, "-1", 3, 0, (sockaddr*)&m_server, sizeof(m_server));
