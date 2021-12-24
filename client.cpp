@@ -181,6 +181,7 @@ public:
 			std::this_thread::sleep_for(std::chrono::milliseconds(20));
 			std::string stringBuf{ receiveInfo() };
 			if (stringBuf.empty()) { continue; }
+			if (stringBuf == "disconnect") { break; }
 			int idConf{ std::stoi((stringBuf.substr(0, stringBuf.find(' ')))) };
 			int packSizeConf{ std::stoi(stringBuf.substr(stringBuf.find(' ') + 1, stringBuf.length())) };
 			Confirmations.emplace(idConf, packSizeConf);
@@ -202,8 +203,8 @@ int main(int argc, char* argv[]) {
 	UDPClient udpClient(ip, udpPort, fileName, timeout);
 	std::future<void> resultUdpClient{ std::async(std::launch::async, &UDPClient::connectUdp, &udpClient) };
 	tcpClient.receiveConfs();
-	resultUdpClient.get();
-	
+	//resultUdpClient.get();
 	tcpClient.~tcpClient();
+	return 0;
 }
 
