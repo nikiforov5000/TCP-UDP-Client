@@ -19,7 +19,6 @@ void Print(std::map<int,int>& map) {
 	}
 	std::cout << "id:" << (*map.rbegin()).first << " " << "size" << (*map.rbegin()).second << std::endl;
 }
-
 class UDPClient {
 	int				m_UDPPort{};
 	std::string		m_ipAddress{};
@@ -42,53 +41,18 @@ public:
 			std::cin >> m_fileName;
 		}
 	}
-	//void sendPack(int id, std::string pack) {
-	//	while (true) {
-	//		size_t packSize{ (std::to_string(id) + " " + pack).length() };
-	//		std::string sendBuf{ std::to_string(id) + " " + pack };
-	//		std::cout << "about to sendFile.." << std::endl;
-	//
-	//		int sendOk = sendto(m_out, sendBuf.c_str(), sendBuf.length() + 1, 0, (sockaddr*)&m_server, sizeof(m_server));
-	//
-	//		std::this_thread::sleep_for(std::chrono::milliseconds(m_timeout));
-	//		Print(Confirmations);
-	//		if (
-	//			!Confirmations.empty() &&
-	//			Confirmations.find(id) != Confirmations.end() &&
-	//			(*Confirmations.find(id)).second == packSize
-	//			) {
-	//			break;
-	//		}
-	//	}
-	//}
-	//void sendFile() {
-	//	std::stringstream buffer;
-	//	buffer << m_ifs.rdbuf();
-	//	std::this_thread::sleep_for(std::chrono::milliseconds(100)); //// Wait
-	//	for (size_t i = 0; i * 1024 < buffer.str().length();) {
-	//		std::string pack{ buffer.str().substr(i * 1024, 1024) };
-	//		auto result = std::async(std::launch::async, &UDPClient::sendPack, this, i++, pack);
-	//		//sendPack(i++, pack);
-	//	}
-	//	std::cout << "END OF FILE" << std::endl;
-	//	sendto(m_out, "-1", 3, 0, (sockaddr*)&m_server, sizeof(m_server));
-	//}
 	void sendPack(int id, std::string pack) {
 		while (true) {
 			size_t packSize{ (std::to_string(id) + " " + pack).length() };
 			std::string sendBuf{ std::to_string(id) + " " + pack };
-			std::cout << "about to sendFile.." << std::endl;
-			
-			std::this_thread::sleep_for(std::chrono::milliseconds(50)); //// Wait
+			//std::cout << "sending pack:" << id << "  size:" << sendBuf.length() << std::endl;
 			int sendOk = sendto(m_out, sendBuf.c_str(), sendBuf.length() + 1, 0, (sockaddr*)&m_server, sizeof(m_server));
-			
 			auto timepoint{ std::chrono::system_clock::now() + std::chrono::milliseconds(m_timeout) };
 			while (timepoint > std::chrono::system_clock::now()) {
-				//Print(Confirmations);
 				if (
 					!Confirmations.empty() &&
 					Confirmations.find(id) != Confirmations.end() &&
-					(*Confirmations.find(id)).second == packSize
+					(*Confirmations.find(id)).second == sendOk
 					) {
 					return;
 				}
@@ -98,12 +62,13 @@ public:
 	void sendFile() {
 		std::stringstream buffer;
 		buffer << m_ifs.rdbuf();
+		size_t bufSize = 64000;
 		std::this_thread::sleep_for(std::chrono::milliseconds(50)); //// Wait
-		for (size_t i = 0; i * 1024 < buffer.str().length();) {
-			std::string pack{ buffer.str().substr(i * 1024, 1024) };
+		for (size_t i = 0; i * bufSize < sizeof(buffer);) {
+			std::string pack{ buffer.str().substr(i * bufSize, bufSize) };
 			sendPack(i++, pack);
-			//auto result = std::async(std::launch::async, &UDPClient::sendPack, this, i++, pack);
 		}
+		
 		std::cout << "END OF FILE" << std::endl;
 		sendto(m_out, "-1", 3, 0, (sockaddr*)&m_server, sizeof(m_server));
 	}
@@ -125,6 +90,11 @@ public:
 		openFile();
 		sendFile();
 	}
+	void closeConn() {
+		closesocket(m_out);
+		WSACleanup();
+	}
+
 };
 
 class TCPClient {
@@ -171,11 +141,6 @@ public:
 		}
 		return "";
 	}
-	~TCPClient() {
-		closesocket(m_sock);
-		// Shutdown winsock
-		WSACleanup();
-	}	
 	void receiveConfs() {
 		while (m_sock != INVALID_SOCKET) {
 			std::this_thread::sleep_for(std::chrono::milliseconds(20));
@@ -186,7 +151,10 @@ public:
 			int packSizeConf{ std::stoi(stringBuf.substr(stringBuf.find(' ') + 1, stringBuf.length())) };
 			Confirmations.emplace(idConf, packSizeConf);
 		}
-		this->~TCPClient();
+	}
+	void closeConn() {
+		closesocket(m_sock);
+		WSACleanup();
 	}
 };
 
@@ -203,8 +171,8 @@ int main(int argc, char* argv[]) {
 	UDPClient udpClient(ip, udpPort, fileName, timeout);
 	std::future<void> resultUdpClient{ std::async(std::launch::async, &UDPClient::connectUdp, &udpClient) };
 	tcpClient.receiveConfs();
-	//resultUdpClient.get();
-	tcpClient.~tcpClient();
+	tcpClient.closeConn();
+	udpClient.closeConn();
 	return 0;
 }
 
